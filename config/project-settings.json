@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "ask": [
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(node *)",
+      "Bash(npx *)",
+      "Bash(sed *)",
+      "Bash(docker *)",
+      "WebFetch",
+      "Bash(gh api *)"
+    ]
+  },
+  "sandbox": {
+    "filesystem": {
+      "allowRead": ["."]
+    }
+  }
+}
