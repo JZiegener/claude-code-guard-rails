@@ -43,7 +43,7 @@ chmod +x "$HOOKS_DIR/validate-command.sh"
 
 # Add hook config to settings.json
 if command -v jq &>/dev/null; then
-  HOOK_CONFIG='{"hooks":{"PreToolUse":[{"matcher":"Bash","command":"'"$HOOKS_DIR/validate-command.sh"'"}]}}'
+  HOOK_CONFIG='{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"'"$HOOKS_DIR/validate-command.sh"'"}]}]}}'
   UPDATED=$(jq --argjson hook "$HOOK_CONFIG" '. * $hook' "$CLAUDE_DIR/settings.json")
   echo "$UPDATED" > "$CLAUDE_DIR/settings.json"
   echo "   Hook installed at $HOOKS_DIR/validate-command.sh"
@@ -51,7 +51,7 @@ if command -v jq &>/dev/null; then
 else
   echo "   Hook script installed at $HOOKS_DIR/validate-command.sh"
   echo "   WARNING: jq not found. You must manually add the hook to ~/.claude/settings.json:"
-  echo '   "hooks": { "PreToolUse": [{ "matcher": "Bash", "command": "'"$HOOKS_DIR/validate-command.sh"'" }] }'
+  echo '   "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "'"$HOOKS_DIR/validate-command.sh"'" }] }] }'
 fi
 
 # Step 3: Add wrapper function to shell rc
