@@ -106,42 +106,6 @@
     ]
   },
   "sandbox": {
-    "enabled": true,
-    "autoAllowBashIfSandboxed": true,
-    "allowUnsandboxedCommands": false,
-    "excludedCommands": [],
-    "filesystem": {
-      "denyRead": [
-        "~/"
-      ],
-      "allowRead": [
-        "~/.claude",
-        "~/.nvm",
-        "~/.npm",
-        "~/.cargo",
-        "~/.rustup",
-        "~/.local/bin",
-        "~/.pyenv",
-        "~/.config/git",
-        "/tmp"
-      ],
-      "allowWrite": [
-        "/tmp"
-      ],
-      "denyWrite": [
-        "~/.claude/settings.json",
-        "~/.claude/settings.local.json",
-        "~/.claude/hooks",
-        "~/.ssh",
-        "~/.aws",
-        "~/.gnupg",
-        "~/.config/gh",
-        "/etc",
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/boot"
-      ]
-    }
+    "enabled": false
   }
 }

@@ -8,8 +8,25 @@ SHELL_RC="$HOME/.bashrc"
 echo "=== Claude Code Guard Rails Installer ==="
 echo
 
+# Step 0: Check prerequisites
+echo "0. Checking prerequisites..."
+if ! command -v bwrap &>/dev/null; then
+  echo "   ERROR: bubblewrap (bwrap) is required but not installed."
+  echo "   Install it with your package manager:"
+  echo "     Ubuntu/Debian: sudo apt install bubblewrap"
+  echo "     Fedora:        sudo dnf install bubblewrap"
+  echo "     Arch:          sudo pacman -S bubblewrap"
+  exit 1
+fi
+echo "   bubblewrap found: $(command -v bwrap)"
+
+if ! command -v claude &>/dev/null; then
+  echo "   WARNING: claude binary not found in PATH."
+  echo "   Install Claude Code before using the wrapper."
+fi
+
 # Step 1: Install user settings
-echo "1. Installing user-level sandbox config..."
+echo "1. Installing user-level settings (permissions, hooks)..."
 mkdir -p "$CLAUDE_DIR"
 
 if [ -f "$CLAUDE_DIR/settings.json" ]; then
@@ -58,14 +75,15 @@ fi
 echo "3. Adding claude wrapper function to $SHELL_RC..."
 
 if grep -q 'claude()' "$SHELL_RC" 2>/dev/null; then
-  echo "   Wrapper function already exists in $SHELL_RC, skipping"
-else
-  {
-    echo ""
-    cat "$SCRIPT_DIR/config/claude-wrapper.sh"
-  } >> "$SHELL_RC"
-  echo "   Added to $SHELL_RC"
+  # Remove old wrapper and replace with new bwrap version
+  sed -i '/^# Claude Code wrapper/,/^}$/d' "$SHELL_RC"
+  echo "   Removed existing wrapper function"
 fi
+{
+  echo ""
+  cat "$SCRIPT_DIR/config/claude-wrapper.sh"
+} >> "$SHELL_RC"
+echo "   Installed bwrap wrapper function in $SHELL_RC"
 
 # Step 4: Opt in current project
 echo "4. Opting in current project..."
@@ -76,6 +94,6 @@ echo "=== Installation complete ==="
 echo
 echo "Next steps:"
 echo "  1. Run: source $SHELL_RC"
-echo "  2. Start a new Claude Code session to apply sandbox config"
+echo "  2. Use 'claude' (the wrapper) to start sessions — it launches inside bwrap"
 echo "  3. Opt in other repos: ./scripts/opt-in-project.sh /path/to/repo"
 echo "     Or all at once:     ./scripts/opt-in-all.sh ~/repos"

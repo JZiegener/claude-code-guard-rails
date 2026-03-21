@@ -13,9 +13,6 @@
     ]
   },
   "sandbox": {
-    "enabled": true,
-    "filesystem": {
-      "allowRead": ["."]
-    }
+    "enabled": false
   }
 }

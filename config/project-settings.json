@@ -10,10 +10,5 @@
       "WebFetch",
       "Bash(gh api *)"
     ]
-  },
-  "sandbox": {
-    "filesystem": {
-      "allowRead": ["."]
-    }
   }
 }

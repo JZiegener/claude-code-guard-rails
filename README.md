@@ -4,30 +4,117 @@ Sandbox-first configuration for Claude Code that restricts its process tree to o
 
 ## How It Works
 
-Claude Code uses [bubblewrap](https://github.com/containers/bubblewrap) on Linux for OS-level sandboxing. All child processes (including spawned agents and worktrees) inherit the same restrictions. The key property: **`allowRead` takes precedence over `denyRead`**, enabling a "deny broad, allow narrow" pattern.
+A shell wrapper function launches Claude Code inside [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`), an OS-level sandbox. All child processes (including spawned agents and worktrees) inherit the same restrictions.
 
 **Three-layer defense:**
 
-1. **Bubblewrap sandbox** (`~/.claude/settings.json`): OS-level filesystem isolation. Denies reads from the entire home directory (`~/`), then allows back specific toolchain paths (`~/.nvm`, `~/.cargo`, etc.) and `~/.claude` itself. This is the strongest layer — it applies to all child processes and cannot be bypassed from userspace.
+1. **Bubblewrap sandbox** (external wrapper): OS-level filesystem isolation via mount namespaces. The home directory is replaced with an empty `tmpfs`, then only the project directory (`$PWD`) and toolchain paths are bind-mounted back in. Sensitive directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`) are never mounted at all — they don't exist inside the sandbox. This is the strongest layer — it applies to all child processes and cannot be bypassed from userspace.
 
 2. **Permission rules** (`~/.claude/settings.json` + per-project): Defines which commands are auto-allowed, which require user confirmation (`ask`), and which are denied. Dangerous runtimes and tools that can exfiltrate data are in the `ask` category, requiring explicit approval each session.
 
 3. **PreToolUse hook** (`~/.claude/hooks/validate-command.sh`): Shell-level validation that catches bypass patterns like piped commands, command chaining, `sed` execute modifiers, and `/proc/self/root` tricks. This layer runs independently of permission rules and provides defense-in-depth.
 
-**Per-project opt-in:**
+### Why an external bwrap wrapper?
 
-Each repo needs a `.claude/settings.json` with `allowRead: ["."]` to grant Claude access to itself.
+Claude Code has a built-in sandbox, but it has a [mount ordering bug](https://github.com/anthropic-experimental/sandbox-runtime/blob/main/src/sandbox/linux-sandbox-utils.ts): the `allowRead` processing re-mounts paths with `--ro-bind` after `allowWrite` has already mounted them with `--bind` (read-write), making the project directory read-only for Bash commands. This means `git add`, `git commit`, `npm install`, and other write operations fail with "Read-only file system" even when `allowWrite: ["."]` is configured. The built-in Edit/Write tools bypass bwrap and work fine, but Bash commands see a read-only filesystem.
+
+The external wrapper solves this by controlling mount order directly:
+
+```
+bwrap mount order:
+  1.  --ro-bind / /              Read-only root (system, binaries, libs)
+  2.  --tmpfs $HOME              Wipe home dir (blocks ~/.aws, etc.)
+  3.  --bind $PWD $PWD           Project dir read-write (git, npm, etc.)
+  4.  --bind ~/.claude            Claude config (session state)
+  5.  --ro-bind settings/hooks   Protect guard rail config
+  6.  SSH agent socket + pubkeys SSH auth without exposing private keys
+  7.  D-Bus + keyring            Claude Code built-in auth
+  8.  --ro-bind .gitconfig       Git user config
+  9.  --ro-bind toolchains       Read-only nvm, cargo, etc.
+  10. --bind .npm                npm cache read-write
+  11. --bind /tmp                Worktrees and temp files
+```
+
+Inspired by [CaptainMcCrank/SandboxedClaudeCode](https://github.com/CaptainMcCrank/SandboxedClaudeCode).
+
+### Where Settings Live
+
+```
+~/.claude/
+├── settings.json          ← User-level (global)
+│                            Permission rules, hooks config
+│                            sandbox.enabled: false (bwrap is external)
+│                            Installed by: install.sh
+│
+└── hooks/
+    └── validate-command.sh ← PreToolUse hook
+                              Installed by: install.sh
+
+~/.bashrc
+└── claude()               ← Wrapper function
+                              Launches claude inside bwrap
+                              Installed by: install.sh
+
+~/repos/my-project/
+└── .claude/
+    └── settings.json      ← Project-level (per-repo)
+                              Permission overrides only
+                              Created by: wrapper function or opt-in script
+```
+
+### How Settings Apply
+
+```
+  ┌───────────────────────────────────────────┐
+  │          bwrap wrapper (shell)             │
+  │                                           │
+  │  Filesystem isolation:                    │
+  │    --ro-bind / /         (read-only root) │
+  │    --tmpfs $HOME         (wipe home)      │
+  │    --bind $PWD $PWD      (project rw)     │
+  │    SSH agent socket      (sign, not read) │
+  │    D-Bus + keyring       (Claude auth)    │
+  │    --ro-bind toolchains  (nvm, cargo...) │
+  │    --bind /tmp           (worktrees)      │
+  │                                           │
+  │  NOT mounted (invisible to Claude):       │
+  │    ~/.ssh/id_* (private keys)  ~/.aws     │
+  │    ~/.gnupg  ~/.config/gh                 │
+  └─────────────────┬─────────────────────────┘
+                    │
+                    ▼
+  ┌───────────────────────────────────────────┐
+  │     Claude Code (inside sandbox)          │
+  │                                           │
+  │  ~/.claude/settings.json (user-level):    │
+  │    permissions: deny/allow/ask rules      │
+  │    hooks: PreToolUse validation           │
+  │    sandbox.enabled: false                 │
+  │                                           │
+  │  .claude/settings.json (project-level):   │
+  │    permissions: per-repo overrides        │
+  └───────────────────────────────────────────┘
+```
+
+**Per-project opt-in:** Each repo needs a `.claude/settings.json` with permission overrides. The wrapper auto-creates one if missing. Filesystem isolation is handled entirely by the bwrap wrapper — project settings only control Claude Code permission tiers.
 
 ### Access Matrix
 
 | Resource | Allowed? | Why |
 |----------|----------|-----|
-| Files in current project | Yes | Project `allowRead: ["."]` overrides user-level deny |
-| Files in other repos | **No** | `denyRead: ["~/"]` blocks all of `~/repos/` |
-| `~/.ssh`, `~/.aws`, `~/.gnupg` | **No** | Under `~/`, denied; also in `denyWrite` |
-| System binaries (`/usr/bin`) | Yes | Not under `~/` |
-| Node/Rust/Python toolchains | Yes | Explicitly in `allowRead` |
-| `/tmp` (worktrees) | Yes | Explicitly in `allowRead` and `allowWrite` |
+| Files in current project | Yes (rw) | `--bind $PWD $PWD` mounts project read-write |
+| Files in other repos | **No** | `--tmpfs $HOME` wipes `~/`, only `$PWD` is re-mounted |
+| `~/.ssh/id_*` (private keys) | **No** | Not mounted — invisible inside sandbox |
+| SSH agent socket | Yes | `SSH_AUTH_SOCK` forwarded — can sign, cannot read keys |
+| `~/.ssh/known_hosts`, `*.pub` | Yes (ro) | `--ro-bind` for host verification |
+| `~/.aws`, `~/.config/gh` | **No** | Not mounted — invisible inside sandbox |
+| `~/.gnupg` | **No** | Not mounted (GPG support deferred — see issue #4) |
+| D-Bus / keyring | Yes | Claude Code built-in auth works |
+| `.gitconfig` | Yes (ro) | `--ro-bind` for git user config |
+| System binaries (`/usr/bin`) | Yes (ro) | `--ro-bind / /` provides read-only system access |
+| Node/Rust/Python toolchains | Yes (ro) | Explicitly `--ro-bind` mounted by wrapper |
+| npm cache (`~/.npm`) | Yes (rw) | `--bind` for caching performance |
+| `/tmp` (worktrees) | Yes (rw) | `--bind /tmp /tmp` |
 | `curl`, `wget`, `nc`, `ssh`, `scp` | **No** | Permission deny rules + hook enforcement |
 | `git`, `npm`, `gh pr` | Yes | Permission allow rules |
 | `python`, `node`, `sed` | **Ask** | Requires user approval (can bypass restrictions) |
@@ -65,13 +152,12 @@ Each repo needs a `.claude/settings.json` with `allowRead: ["."]` to grant Claud
 
 ### What this protects against
 - **Accidental cross-repo access**: Claude cannot read files from other projects
-- **Credential theft**: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh` are all blocked
+- **Credential theft**: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh` are not mounted — they don't exist inside the sandbox
 - **Casual exfiltration**: `curl` and `wget` are denied; `WebFetch` and `gh api` require approval
 - **Destructive operations**: `sudo`, force push, `rm -rf /`, `mkfs` are denied
 - **Common bypass patterns**: Pipe chains, command chaining, `sed -e`, `sort --compress-program`, `/proc/self/root` tricks are caught by the hook
-- **Sandbox escape**: `allowUnsandboxedCommands: false` prevents Claude from disabling bubblewrap
-- **Settings self-modification**: `~/.claude/settings.json` is in `denyWrite`, preventing Claude from weakening its own guard rails
-- **Hook tampering**: `~/.claude/hooks` is in `denyWrite`, preventing Claude from overwriting validation scripts
+- **Settings self-modification**: `~/.claude/settings.json` is `--ro-bind` mounted, preventing Claude from weakening its own guard rails
+- **Hook tampering**: `~/.claude/hooks` is `--ro-bind` mounted, preventing Claude from overwriting validation scripts
 - **Shell wrapper bypass**: `bash -c`, `sh -c`, `env`, `xargs` wrapping denied tools is caught by both permission deny rules and the hook
 - **`find -exec` / `awk system()` bypass**: The hook inspects arguments to `find -exec` and `awk system()`/`popen()` for denied tools
 
@@ -81,7 +167,6 @@ These are inherent to the sandbox model and cannot be fully addressed by configu
 
 - **Bubblewrap doesn't block network tools**: The sandbox restricts filesystem access under `~/` but does not prevent execution of network tools like `/usr/bin/curl`. Exfiltration prevention relies entirely on permission rules + the hook — not the sandbox itself.
 - **Environment variables are exposed**: Even with perfect filesystem isolation, secrets in environment variables (`$GITHUB_TOKEN`, `$AWS_SECRET_ACCESS_KEY`, etc.) are readable by any process Claude spawns. Avoid exporting secrets in your shell profile, or unset them before running Claude.
-- **`autoAllowBashIfSandboxed: true` widens attack surface**: This setting auto-approves all Bash commands when sandboxed, making deny rules the only permission gate. If deny rules are broken (see Known Limitations below), there is no interactive approval step. This is a deliberate UX tradeoff — set it to `false` if you prefer to approve each command manually.
 - **`npm install` lifecycle scripts**: `npm install` is auto-allowed and executes `postinstall` scripts from `package.json`. A malicious project could exfiltrate env vars this way. The sandbox prevents reading `~/.aws` etc., but env vars with secrets are still exposed. Consider using `npm install --ignore-scripts` in untrusted projects.
 - **`awk` and `find` are auto-allowed**: These tools can execute arbitrary commands via `awk system()` and `find -exec`. The hook inspects for denied tools in these contexts, but cannot catch all obfuscation. In high-security scenarios, consider moving them to the `ask` tier.
 
@@ -124,10 +209,11 @@ These are inherent to the sandbox model and cannot be fully addressed by configu
 ```
 
 This will:
-1. Install the user-level sandbox config to `~/.claude/settings.json`
-2. Install the PreToolUse validation hook to `~/.claude/hooks/validate-command.sh`
-3. Add a `claude` wrapper function to `~/.bashrc` that auto-creates project settings
-4. Create `.claude/settings.json` in the current directory if missing
+1. Check that `bwrap` (bubblewrap) is installed
+2. Install permission rules and hook config to `~/.claude/settings.json`
+3. Install the PreToolUse validation hook to `~/.claude/hooks/validate-command.sh`
+4. Add a `claude` bwrap wrapper function to `~/.bashrc`
+5. Create `.claude/settings.json` in the current directory if missing
 
 ### Manual Install
 
@@ -155,7 +241,7 @@ source ~/.bashrc
 
 ### Opt In a Project
 
-Each repo needs a `.claude/settings.json` to grant Claude read access:
+Each repo needs a `.claude/settings.json` for per-project permission overrides:
 
 ```bash
 ./scripts/opt-in-project.sh /path/to/repo
@@ -182,20 +268,22 @@ cp config/project-settings.json /path/to/repo/.claude/settings.json
 
 This restores your `~/.claude/settings.json` backup, removes the hook script, and removes the wrapper function from `~/.bashrc`.
 
+## API Keys and Authentication
+
+The sandbox blocks `~/.config/gh`, `~/.aws`, and other credential stores. See **[docs/api-keys-and-auth.md](docs/api-keys-and-auth.md)** for how to inject tokens via parent environment variables, 1Password CLI, or other secret managers.
+
 ## Customization
 
 ### Adding Toolchain Paths
 
-If you use additional toolchains under `~/`, add them to `allowRead` in `~/.claude/settings.json`:
+If you use additional toolchains under `~/`, add them to the `OPTIONAL_RO_BINDS` loop in `config/claude-wrapper.sh`:
 
-```json
-"allowRead": [
-  "~/.claude",
-  "~/.nvm",
-  "~/.rbenv",
-  "~/.goenv",
-  "~/.sdkman"
-]
+```bash
+for dir in "$HOME/.nvm" "$HOME/.npm" "$HOME/.cargo" "$HOME/.rustup" \
+           "$HOME/.local/bin" "$HOME/.pyenv" "$HOME/.config/git" \
+           "$HOME/.rbenv" "$HOME/.goenv" "$HOME/.sdkman"; do
+  [ -d "$dir" ] && OPTIONAL_RO_BINDS="$OPTIONAL_RO_BINDS --ro-bind $dir $dir"
+done
 ```
 
 ### Moving Commands Between Permission Tiers
@@ -208,18 +296,15 @@ If you trust a runtime in a specific project, you can move it from `ask` to `all
     "allow": [
       "Bash(python3 *)"
     ]
-  },
-  "sandbox": {
-    "filesystem": {
-      "allowRead": ["."]
-    }
   }
 }
 ```
 
 ### Diagnosing Permission Errors
 
-If a command fails with "Operation not permitted", the sandbox is likely blocking access to a path under `~/`. Check what path is needed and add it to the appropriate `allowRead` list.
+If a command fails with "Read-only file system", the bwrap wrapper is not mounting that path as writable. Check `config/claude-wrapper.sh` for the mount configuration.
+
+If a command fails with "No such file or directory" for a path under `~/`, the `--tmpfs $HOME` mount is hiding it. Add a `--ro-bind` entry for the needed path in the wrapper.
 
 ## File Structure
 
@@ -229,9 +314,11 @@ If a command fails with "Operation not permitted", the sandbox is likely blockin
 ├── install.sh              # Full installation script
 ├── uninstall.sh            # Restores previous settings
 ├── config/
-│   ├── user-settings.json  # User-level sandbox config (~/.claude/settings.json)
-│   ├── project-settings.json  # Template for per-project opt-in
-│   └── claude-wrapper.sh   # Shell wrapper function for auto-opt-in
+│   ├── user-settings.json  # User-level permissions + hooks (~/.claude/settings.json)
+│   ├── project-settings.json  # Template for per-project permission overrides
+│   └── claude-wrapper.sh   # bwrap sandbox wrapper function
+├── docs/
+│   └── api-keys-and-auth.md  # Guide for configuring API keys and auth
 ├── hooks/
 │   └── validate-command.sh # PreToolUse hook for bypass detection
 └── scripts/
@@ -241,7 +328,8 @@ If a command fails with "Operation not permitted", the sandbox is likely blockin
 
 ## Requirements
 
-- Claude Code on Linux (bubblewrap sandbox)
+- Claude Code on Linux
+- [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) — required
 - Bash shell
 - `jq` (recommended, for config merging during install)
 
