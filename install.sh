@@ -74,14 +74,21 @@ fi
 # Step 3: Add wrapper function to shell rc
 echo "3. Adding claude wrapper function to $SHELL_RC..."
 
-if grep -q 'claude()' "$SHELL_RC" 2>/dev/null; then
-  # Remove old wrapper and replace with new bwrap version
-  sed -i '/^# Claude Code wrapper/,/^}$/d' "$SHELL_RC"
+if grep -q '# --- BEGIN claude-code-guard-rails ---' "$SHELL_RC" 2>/dev/null; then
+  sed -i '/^# --- BEGIN claude-code-guard-rails ---$/,/^# --- END claude-code-guard-rails ---$/d' "$SHELL_RC"
   echo "   Removed existing wrapper function"
+elif grep -q 'claude()' "$SHELL_RC" 2>/dev/null; then
+  # Legacy wrapper without markers — remove by function pattern
+  sed -i '/^claude() {$/,/^}$/d' "$SHELL_RC"
+  # Also clean up the comment line before it
+  sed -i '/^# Claude Code wrapper/d' "$SHELL_RC"
+  echo "   Removed legacy wrapper function"
 fi
 {
   echo ""
+  echo "# --- BEGIN claude-code-guard-rails ---"
   cat "$SCRIPT_DIR/config/claude-wrapper.sh"
+  echo "# --- END claude-code-guard-rails ---"
 } >> "$SHELL_RC"
 echo "   Installed bwrap wrapper function in $SHELL_RC"
 

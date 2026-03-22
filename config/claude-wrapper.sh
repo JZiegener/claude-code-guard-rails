@@ -107,6 +107,19 @@ SETTINGS
     CLAUDE_BINDS="$CLAUDE_BINDS --ro-bind $CLAUDE_REAL_DIR $CLAUDE_REAL_DIR"
   fi
 
+  # --- Git SSH workaround ---
+  # bwrap creates a user namespace that only maps the calling user's UID.
+  # Root-owned files (like /etc/ssh/ssh_config.d/*) appear as nobody:nogroup
+  # inside the sandbox. SSH does a strict ownership check on config files and
+  # rejects them, breaking git push over SSH. Work around by telling git to
+  # invoke SSH with an empty config (-F /dev/null) and explicitly set the
+  # known hosts file. SSH defaults (port 22, ciphers, key exchange) are
+  # compiled into the binary and still apply. Agent auth works via SSH_AUTH_SOCK.
+  local GIT_SSH_VAL="ssh -F /dev/null"
+  if [ -f "$HOME/.ssh/known_hosts" ]; then
+    GIT_SSH_VAL="ssh -F /dev/null -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+  fi
+
   # --- Env var passthrough ---
   local EXTRA_ENV=""
   [ -n "${GH_TOKEN:-}" ] && EXTRA_ENV="$EXTRA_ENV --setenv GH_TOKEN $GH_TOKEN"
@@ -151,6 +164,7 @@ SETTINGS
     --setenv USER "$USER" \
     $SSH_ENV \
     $DBUS_ENV \
+    --setenv GIT_SSH_COMMAND "$GIT_SSH_VAL" \
     $EXTRA_ENV \
     --share-net \
     --unshare-pid \
