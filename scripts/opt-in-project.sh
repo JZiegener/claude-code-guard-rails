@@ -15,11 +15,11 @@ if [ ! -d "$TARGET" ]; then
   exit 1
 fi
 
-if [ -f "$TARGET/.claude/settings.json" ]; then
-  echo "Already exists: $TARGET/.claude/settings.json"
+if [ -f "$TARGET/.claude/settings.local.json" ]; then
+  echo "Already exists: $TARGET/.claude/settings.local.json"
   exit 0
 fi
 
 mkdir -p "$TARGET/.claude"
-cp "$TEMPLATE" "$TARGET/.claude/settings.json"
-echo "Created $TARGET/.claude/settings.json"
+cp "$TEMPLATE" "$TARGET/.claude/settings.local.json"
+echo "Created $TARGET/.claude/settings.local.json"

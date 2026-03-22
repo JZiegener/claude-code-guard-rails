@@ -7,10 +7,12 @@
 # for Bash commands (git, npm, etc.) even when allowWrite: ["."] is set.
 # See: https://github.com/CaptainMcCrank/SandboxedClaudeCode
 claude() {
-  # Auto-create project .claude/settings.json if missing
-  if [ ! -f ".claude/settings.json" ]; then
+  # Auto-create project .claude/settings.local.json if missing
+  # Uses settings.local.json (not settings.json) because these are guard rail
+  # overrides personal to this wrapper, not project policy to commit/share.
+  if [ ! -f ".claude/settings.local.json" ]; then
     mkdir -p .claude
-    cat > .claude/settings.json << 'SETTINGS'
+    cat > .claude/settings.local.json << 'SETTINGS'
 {
   "permissions": {
     "ask": [
@@ -26,7 +28,7 @@ claude() {
   }
 }
 SETTINGS
-    echo "Created .claude/settings.json (permission overrides for this project)"
+    echo "Created .claude/settings.local.json (guard rail overrides for this project)"
   fi
 
   # Auto-inject GH_TOKEN from existing gh auth login if not already set

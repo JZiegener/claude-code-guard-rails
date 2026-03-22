@@ -57,8 +57,8 @@ Inspired by [CaptainMcCrank/SandboxedClaudeCode](https://github.com/CaptainMcCra
 
 ~/repos/my-project/
 └── .claude/
-    └── settings.json      ← Project-level (per-repo)
-                              Permission overrides only
+    └── settings.local.json ← Project-level (per-repo, not committed)
+                              Guard rail permission overrides
                               Created by: wrapper function or opt-in script
 ```
 
@@ -91,12 +91,12 @@ Inspired by [CaptainMcCrank/SandboxedClaudeCode](https://github.com/CaptainMcCra
   │    hooks: PreToolUse validation           │
   │    sandbox.enabled: false                 │
   │                                           │
-  │  .claude/settings.json (project-level):   │
-  │    permissions: per-repo overrides        │
+  │  .claude/settings.local.json (project):    │
+  │    permissions: guard rail overrides      │
   └───────────────────────────────────────────┘
 ```
 
-**Per-project opt-in:** Each repo needs a `.claude/settings.json` with permission overrides. The wrapper auto-creates one if missing. Filesystem isolation is handled entirely by the bwrap wrapper — project settings only control Claude Code permission tiers.
+**Per-project opt-in:** Each repo gets a `.claude/settings.local.json` with guard rail permission overrides. The wrapper auto-creates one if missing. This file is local (not committed) — filesystem isolation is handled entirely by the bwrap wrapper.
 
 ### Access Matrix
 
@@ -214,7 +214,7 @@ This will:
 2. Install permission rules and hook config to `~/.claude/settings.json`
 3. Install the PreToolUse validation hook to `~/.claude/hooks/validate-command.sh`
 4. Add a `claude` bwrap wrapper function to `~/.bashrc`
-5. Create `.claude/settings.json` in the current directory if missing
+5. Create `.claude/settings.local.json` in the current directory if missing
 
 ### Manual Install
 
@@ -242,7 +242,7 @@ source ~/.bashrc
 
 ### Opt In a Project
 
-Each repo needs a `.claude/settings.json` for per-project permission overrides:
+Each repo gets a `.claude/settings.local.json` for guard rail permission overrides:
 
 ```bash
 ./scripts/opt-in-project.sh /path/to/repo
@@ -252,7 +252,7 @@ Or do it manually:
 
 ```bash
 mkdir -p /path/to/repo/.claude
-cp config/project-settings.json /path/to/repo/.claude/settings.json
+cp config/project-settings.json /path/to/repo/.claude/settings.local.json
 ```
 
 ### Opt In All Repos
@@ -289,7 +289,7 @@ done
 
 ### Moving Commands Between Permission Tiers
 
-If you trust a runtime in a specific project, you can move it from `ask` to `allow` in that project's `.claude/settings.json`:
+If you trust a runtime in a specific project, you can move it from `ask` to `allow` in that project's `.claude/settings.local.json`:
 
 ```json
 {
@@ -316,7 +316,7 @@ If a command fails with "No such file or directory" for a path under `~/`, the `
 ├── uninstall.sh            # Restores previous settings
 ├── config/
 │   ├── user-settings.json  # User-level permissions + hooks (~/.claude/settings.json)
-│   ├── project-settings.json  # Template for per-project permission overrides
+│   ├── project-settings.json  # Template for per-project guard rail overrides
 │   └── claude-wrapper.sh   # bwrap sandbox wrapper function
 ├── docs/
 │   └── api-keys-and-auth.md  # Guide for configuring API keys and auth
