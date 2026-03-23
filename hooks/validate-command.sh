@@ -179,9 +179,17 @@ if echo "$COMMAND" | grep -qP '^\s*gh\s+api\b'; then
   fi
 
   # --- Block dangerous admin endpoints (any method, any repo) ---
-  ADMIN_PATTERNS="settings|hooks|keys|actions/secrets|environments|collaborators|protection|rulesets|invitations|autolinks|topics|transfer|forks|import|pages|traffic|vulnerability-alerts"
-  if echo "$GH_ENDPOINT" | grep -qP "^repos/[^/]+/[^/]+/($ADMIN_PATTERNS)"; then
-    ADMIN_MATCH=$(echo "$GH_ENDPOINT" | grep -oP "^repos/[^/]+/[^/]+/\K($ADMIN_PATTERNS)")
+  # TOP_PATTERNS: matched immediately under repos/OWNER/REPO/
+  TOP_PATTERNS="settings|hooks|keys|actions/secrets|environments|collaborators|rulesets|invitations|autolinks|topics|transfer|forks|import|pages|traffic|vulnerability-alerts"
+  # NESTED_PATTERNS: matched anywhere in the path (e.g. branches/*/protection)
+  NESTED_PATTERNS="protection"
+  if echo "$GH_ENDPOINT" | grep -qP "^repos/[^/]+/[^/]+/($TOP_PATTERNS)"; then
+    ADMIN_MATCH=$(echo "$GH_ENDPOINT" | grep -oP "^repos/[^/]+/[^/]+/\K($TOP_PATTERNS)")
+    echo '{"error": "Blocked: gh api targeting admin endpoint '"'$ADMIN_MATCH'"'. Repository settings, hooks, keys, secrets, and access control endpoints are not permitted."}'
+    exit 2
+  fi
+  if echo "$GH_ENDPOINT" | grep -qP "^repos/[^/]+/[^/]+/.*\b($NESTED_PATTERNS)\b"; then
+    ADMIN_MATCH=$(echo "$GH_ENDPOINT" | grep -oP "\b($NESTED_PATTERNS)\b" | head -1)
     echo '{"error": "Blocked: gh api targeting admin endpoint '"'$ADMIN_MATCH'"'. Repository settings, hooks, keys, secrets, and access control endpoints are not permitted."}'
     exit 2
   fi
