@@ -122,5 +122,106 @@ if echo "$COMMAND" | grep -qP '\b[gm]?awk\b.*\|\s*"'; then
   exit 2
 fi
 
+# --- gh api endpoint and method validation ---
+# Validates gh api calls: blocks admin endpoints, destructive deletes,
+# foreign-repo writes, graphql, and non-repo endpoints.
+# Safe operations pass through to the settings tier (ask/allow).
+
+if echo "$COMMAND" | grep -qP '^\s*gh\s+api\b'; then
+  # Extract HTTP method (default GET if no -X/--method flag)
+  GH_METHOD="GET"
+  if echo "$COMMAND" | grep -qP '\s(-X|--method)\s+'; then
+    GH_METHOD=$(echo "$COMMAND" | grep -oP '(?<=-X\s|--method\s)\s*\K[A-Z]+' | head -1)
+  fi
+
+  # Extract the endpoint by parsing arguments after 'gh api'.
+  # Must handle flag ordering: gh api -X PATCH repos/... or gh api repos/... -X PATCH
+  # Strategy: strip 'gh api', then walk tokens skipping flags and their values.
+  GH_ARGS=$(echo "$COMMAND" | sed 's/^\s*gh\s\+api\s\+//')
+  GH_ENDPOINT=""
+  SKIP_NEXT=false
+  # Flags that consume the next token as their value
+  FLAG_WITH_VALUE="-X|--method|-H|--header|-f|--field|-F|--input|--jq|-q|--template|-t|-R|--repo|--cache"
+  while IFS= read -r token; do
+    if $SKIP_NEXT; then
+      SKIP_NEXT=false
+      continue
+    fi
+    # Skip flags that take a value (next token is consumed)
+    if echo "$token" | grep -qP "^($FLAG_WITH_VALUE)$"; then
+      SKIP_NEXT=true
+      continue
+    fi
+    # Skip flags with = syntax (e.g., --method=PATCH, -f key=val)
+    if echo "$token" | grep -qP '^-'; then
+      continue
+    fi
+    # Skip HTTP method names that might appear after flag stripping
+    if echo "$token" | grep -qP '^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$'; then
+      continue
+    fi
+    # First non-flag, non-method token is the endpoint
+    GH_ENDPOINT="$token"
+    break
+  done < <(echo "$GH_ARGS" | grep -oP '[^\s]+')
+  GH_ENDPOINT="${GH_ENDPOINT#/}"  # strip leading slash
+
+  # --- Block GraphQL (unverifiable scope) ---
+  if [[ "$GH_ENDPOINT" == "graphql" ]] || echo "$COMMAND" | grep -qP '\bgraphql\b'; then
+    echo '{"error": "Blocked: gh api graphql calls cannot be repo-verified. Use gh pr/gh issue commands instead, or get user approval for direct API access."}'
+    exit 2
+  fi
+
+  # --- Block non-repo endpoints ---
+  if [[ -n "$GH_ENDPOINT" ]] && ! echo "$GH_ENDPOINT" | grep -qP '^repos/'; then
+    echo '{"error": "Blocked: gh api endpoint '"'$GH_ENDPOINT'"' is not a repos/ endpoint. Only repo-scoped API calls are permitted."}'
+    exit 2
+  fi
+
+  # --- Block dangerous admin endpoints (any method, any repo) ---
+  # TOP_PATTERNS: matched immediately under repos/OWNER/REPO/
+  TOP_PATTERNS="settings|hooks|keys|actions/secrets|environments|collaborators|rulesets|invitations|autolinks|topics|transfer|forks|import|pages|traffic|vulnerability-alerts"
+  # NESTED_PATTERNS: matched anywhere in the path (e.g. branches/*/protection)
+  NESTED_PATTERNS="protection"
+  if echo "$GH_ENDPOINT" | grep -qP "^repos/[^/]+/[^/]+/($TOP_PATTERNS)"; then
+    ADMIN_MATCH=$(echo "$GH_ENDPOINT" | grep -oP "^repos/[^/]+/[^/]+/\K($TOP_PATTERNS)")
+    echo '{"error": "Blocked: gh api targeting admin endpoint '"'$ADMIN_MATCH'"'. Repository settings, hooks, keys, secrets, and access control endpoints are not permitted."}'
+    exit 2
+  fi
+  if echo "$GH_ENDPOINT" | grep -qP "^repos/[^/]+/[^/]+/.*\b($NESTED_PATTERNS)\b"; then
+    ADMIN_MATCH=$(echo "$GH_ENDPOINT" | grep -oP "\b($NESTED_PATTERNS)\b" | head -1)
+    echo '{"error": "Blocked: gh api targeting admin endpoint '"'$ADMIN_MATCH'"'. Repository settings, hooks, keys, secrets, and access control endpoints are not permitted."}'
+    exit 2
+  fi
+
+  # --- Block destructive comment deletion (any repo) ---
+  if [[ "$GH_METHOD" == "DELETE" ]] && echo "$GH_ENDPOINT" | grep -qP '^repos/[^/]+/[^/]+/issues/comments/'; then
+    echo '{"error": "Blocked: DELETE on issue comments is permanent and irreversible. Edit the comment instead using PATCH, or use gh issue/pr commands."}'
+    exit 2
+  fi
+
+  # --- Block foreign-repo writes ---
+  if [[ "$GH_METHOD" != "GET" ]] && [[ -n "$GH_ENDPOINT" ]]; then
+    # Extract target owner/repo from endpoint
+    API_OWNER_REPO=$(echo "$GH_ENDPOINT" | grep -oP '^repos/\K[^/]+/[^/]+' | tr '[:upper:]' '[:lower:]')
+
+    if [[ -n "$API_OWNER_REPO" ]]; then
+      # Determine current repo from git remote
+      CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null || echo "")
+      CURRENT_REPO=""
+      if [[ -n "$CURRENT_REMOTE" ]]; then
+        # Handle HTTPS: https://github.com/OWNER/REPO.git
+        # Handle SSH: git@github.com:OWNER/REPO.git
+        CURRENT_REPO=$(echo "$CURRENT_REMOTE" | sed -E 's#.*github\.com[:/]##; s/\.git$//' | tr '[:upper:]' '[:lower:]')
+      fi
+
+      if [[ -n "$CURRENT_REPO" ]] && [[ "$API_OWNER_REPO" != "$CURRENT_REPO" ]]; then
+        echo '{"error": "Blocked: gh api '"$GH_METHOD"' targets foreign repo '"'$API_OWNER_REPO'"' but current repo is '"'$CURRENT_REPO'"'. Write operations to other repositories are not permitted."}'
+        exit 2
+      fi
+    fi
+  fi
+fi
+
 # All checks passed
 exit 0
